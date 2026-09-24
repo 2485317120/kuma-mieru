@@ -1,8 +1,10 @@
 import { getConfig } from '@/config/api';
 import { getPreloadData } from '@/services/config.server';
 import type { HeartbeatData, MonitorGroup, MonitoringData, UptimeData } from '@/types/monitor';
+import type { PageFailureType } from '@/types/page';
 import { customFetchOptions, ensureUTCTimezone } from './utils/common';
 import { customFetch } from './utils/fetch';
+import { classifyRequestError } from './utils/request-error';
 
 /**
  * Process heartbeat data to ensure UTC timezone
@@ -12,7 +14,7 @@ import { customFetch } from './utils/fetch';
 function processHeartbeatData(data: HeartbeatData): HeartbeatData {
   const processed: HeartbeatData = {};
   for (const [key, heartbeats] of Object.entries(data)) {
-    processed[key] = heartbeats.map((hb) => ({
+    processed[key] = heartbeats.map(hb => ({
       ...hb,
       time: ensureUTCTimezone(hb.time),
     }));
@@ -23,17 +25,40 @@ function processHeartbeatData(data: HeartbeatData): HeartbeatData {
 class MonitorDataError extends Error {
   constructor(
     message: string,
-    public readonly cause?: unknown,
+    public readonly cause?: unknown
   ) {
     super(message);
     this.name = 'MonitorDataError';
   }
 }
 
+export interface MonitoringDataResult {
+  success: boolean;
+  status: 'ok' | 'all_failed';
+  data: {
+    monitorGroups: MonitorGroup[];
+    data: MonitoringData;
+  };
+  failureType?: PageFailureType;
+  error?: string;
+}
+
+function createFallbackMonitoringData() {
+  return {
+    monitorGroups: [],
+    data: { heartbeatList: {}, uptimeList: {} },
+  };
+}
+
 export async function getMonitoringData(pageId?: string): Promise<{
   monitorGroups: MonitorGroup[];
   data: MonitoringData;
 }> {
+  const result = await getMonitoringDataResult(pageId);
+  return result.data;
+}
+
+export async function getMonitoringDataResult(pageId?: string): Promise<MonitoringDataResult> {
   const config = getConfig(pageId);
 
   if (!config) {
@@ -41,13 +66,15 @@ export async function getMonitoringData(pageId?: string): Promise<{
       pageId,
     });
     return {
-      monitorGroups: [],
-      data: { heartbeatList: {}, uptimeList: {} },
+      success: false,
+      status: 'all_failed',
+      data: createFallbackMonitoringData(),
+      failureType: 'unknown',
+      error: `Invalid status page id: ${pageId ?? 'undefined'}`,
     };
   }
 
   try {
-
     // 使用共享的预加载数据获取函数
     const preloadData = await getPreloadData(config);
 
@@ -61,7 +88,7 @@ export async function getMonitoringData(pageId?: string): Promise<{
 
     if (!apiResponse.ok) {
       throw new MonitorDataError(
-        `API request failed: ${apiResponse.status} ${apiResponse.statusText}`,
+        `API request failed: ${apiResponse.status} ${apiResponse.statusText}`
       );
     }
 
@@ -98,8 +125,12 @@ export async function getMonitoringData(pageId?: string): Promise<{
     }
 
     return {
-      monitorGroups: preloadData.publicGroupList,
-      data: monitoringData,
+      success: true,
+      status: 'ok',
+      data: {
+        monitorGroups: preloadData.publicGroupList,
+        data: monitoringData,
+      },
     };
   } catch (error) {
     console.error(
@@ -116,13 +147,15 @@ export async function getMonitoringData(pageId?: string): Promise<{
               }
             : error,
         endpoint: config.apiEndpoint,
-      },
+      }
     );
 
-    // 返回默认值
     return {
-      monitorGroups: [],
-      data: { heartbeatList: {}, uptimeList: {} },
+      success: false,
+      status: 'all_failed',
+      data: createFallbackMonitoringData(),
+      failureType: classifyRequestError(error),
+      error: error instanceof Error ? error.message : 'Unknown error',
     };
   }
 }

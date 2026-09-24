@@ -1,9 +1,23 @@
+import { buildStatusPageMetadata } from '@/app/lib/site-metadata';
 import { PageConfigProvider } from '@/components/context/PageConfigContext';
 import { AppShell } from '@/components/layout/AppShell';
 import { MonitorDetailContent } from '@/components/monitor/MonitorDetailContent';
-import { getConfig } from '@/config/api';
-import { getGlobalConfig, getPageTabsMetadata } from '@/services/config.server';
+import { MonitorDataPreload } from '@/components/status/MonitorDataPreload';
+import { getConfig, toPublicConfig } from '@/config/api';
+import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
+
+export async function generateMetadata({
+  searchParams,
+}: {
+  searchParams: Promise<{ pageId?: string }> | { pageId?: string };
+}): Promise<Metadata> {
+  const resolvedSearchParams = await searchParams;
+  const requestedPageId = resolvedSearchParams?.pageId;
+  const pageConfig = requestedPageId ? getConfig(requestedPageId) : getConfig();
+
+  return buildStatusPageMetadata(pageConfig);
+}
 
 export default async function MonitorDetailPage({
   params,
@@ -21,14 +35,10 @@ export default async function MonitorDetailPage({
     notFound();
   }
 
-  const [{ config: footerConfig }, pageTabs] = await Promise.all([
-    getGlobalConfig(pageConfig.pageId),
-    getPageTabsMetadata(),
-  ]);
-
   return (
-    <PageConfigProvider initialConfig={pageConfig}>
-      <AppShell footerConfig={footerConfig} pageTabs={pageTabs}>
+    <PageConfigProvider key={pageConfig.pageId} initialConfig={toPublicConfig(pageConfig)}>
+      <AppShell>
+        <MonitorDataPreload pageId={pageConfig.pageId} />
         <MonitorDetailContent monitorId={monitorId} />
       </AppShell>
     </PageConfigProvider>

@@ -19,8 +19,7 @@ import { filterMonitorByStatus } from '@/utils/monitorFilters';
 import { Button, Tooltip } from '@heroui/react';
 import { LayoutGrid, LayoutList } from 'lucide-react';
 import { useTranslations } from 'next-intl';
-import { useTheme } from 'next-themes';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 
 const GLOBAL_VIEW_PREFERENCE_KEY = 'view-preference';
 
@@ -30,16 +29,15 @@ interface EnhancedMonitorGroup extends MonitorGroup {
 }
 
 export function StatusPage() {
-  const { config: globalConfig, isLoading: isLoadingConfig } = useConfig();
-  const { maintenanceList, isLoading: isLoadingMaintenance } = useMaintenanceData();
+  const { config: globalConfig } = useConfig();
+  const { maintenanceList } = useMaintenanceData();
   const { monitorGroups, monitoringData, isLoading: isLoadingMonitors } = useMonitorData();
   const { searchTerm, isFiltering, clearSearch, filterStatus, searchInGroup } = useNodeSearch();
   const currentPageConfig = usePageConfig();
-  const { setTheme } = useTheme();
 
   const [isGlobalLiteView, setIsGlobalLiteView] = useState(false);
+  const [, startTransition] = useTransition();
 
-  const t = useTranslations();
   const viewT = useTranslations('view');
 
   useEffect(() => {
@@ -57,16 +55,10 @@ export function StatusPage() {
     }
   }, [isGlobalLiteView]);
 
-  useEffect(() => {
-    if (globalConfig?.config.theme) {
-      setTheme(globalConfig.config.theme);
-    }
-  }, [globalConfig?.config.theme, setTheme]);
-
-  const isLoading = isLoadingMonitors || isLoadingConfig || isLoadingMaintenance;
+  const isLoading = isLoadingMonitors;
 
   const activeMaintenances = maintenanceList.filter(
-    (m) => m.active && (m.status === 'under-maintenance' || m.status === 'scheduled'),
+    m => m.active && (m.status === 'under-maintenance' || m.status === 'scheduled')
   );
 
   const handleRefresh = async () => {
@@ -74,7 +66,9 @@ export function StatusPage() {
   };
 
   const toggleGlobalView = () => {
-    setIsGlobalLiteView((prev) => !prev);
+    startTransition(() => {
+      setIsGlobalLiteView(prev => !prev);
+    });
   };
 
   const filteredMonitorGroups = useMemo(() => {
@@ -87,7 +81,7 @@ export function StatusPage() {
       filterMonitorByStatus(monitor, filterStatus, monitoringData.heartbeatList);
 
     return monitorGroups
-      .map((group) => {
+      .map(group => {
         const groupNameMatches =
           searchInGroup && hasSearchTerm && group.name.toLowerCase().includes(searchTermLower);
 
@@ -100,7 +94,7 @@ export function StatusPage() {
           };
         }
 
-        const filteredMonitors = group.monitorList.filter((monitor) => {
+        const filteredMonitors = group.monitorList.filter(monitor => {
           if (!statusFilter(monitor)) return false;
 
           if (!hasSearchTerm) return true;
@@ -109,9 +103,9 @@ export function StatusPage() {
             monitor.name.toLowerCase().includes(searchTermLower) ||
             monitor.url?.toLowerCase().includes(searchTermLower) ||
             monitor.tags?.some(
-              (tag) =>
+              tag =>
                 tag.name.toLowerCase().includes(searchTermLower) ||
-                tag.value?.toLowerCase().includes(searchTermLower),
+                tag.value?.toLowerCase().includes(searchTermLower)
             )
           );
         });
@@ -173,11 +167,13 @@ export function StatusPage() {
           </Tooltip>
         </div>
 
-        {activeMaintenances.map((maintenance) => (
+        {activeMaintenances.map(maintenance => (
           <MaintenanceAlert key={maintenance.id} maintenance={maintenance} />
         ))}
 
-        {globalConfig?.incident && <IncidentMarkdownAlert incident={globalConfig.incident} />}
+        {globalConfig?.incidents?.map(incident => (
+          <IncidentMarkdownAlert key={incident.id} incident={incident} />
+        ))}
 
         <FilterResults matchedMonitorsCount={matchedMonitorsCount} />
 

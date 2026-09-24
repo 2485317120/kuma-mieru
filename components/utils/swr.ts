@@ -3,8 +3,26 @@
 import { usePageConfig } from '@/components/context/PageConfigContext';
 import type { GlobalConfig } from '@/types/config';
 import type { MonitorResponse, MonitoringData } from '@/types/monitor';
+import type { PageTabMeta, PageTabsStatusMatrix } from '@/types/page';
+import { useCallback, useEffect, useRef } from 'react';
 import useSWR, { mutate } from 'swr';
 import type { SWRConfiguration } from 'swr';
+
+interface ApiEnvelope {
+  success?: boolean;
+  status?: 'ok' | 'partial' | 'all_failed' | 'partial_failed';
+  error?: string;
+}
+
+export interface ConfigResponse extends GlobalConfig {
+  pageTabs?: PageTabMeta[];
+  matrixStatus?: PageTabsStatusMatrix['status'];
+  success?: boolean;
+  status?: ApiEnvelope['status'];
+  failureType?: PageTabMeta['failureType'];
+  error?: string;
+  timestamp?: number;
+}
 
 /**
  * swr 通用 fetcher
@@ -12,15 +30,29 @@ import type { SWRConfiguration } from 'swr';
  * @returns 解析后的 JSON data
  * @throws 请求失败抛出错误
  */
-const fetcher = async (url: string) => {
+const fetcher = async <T>(url: string): Promise<T> => {
   const response = await fetch(url);
-  const data = await response.json();
+  const data = (await response.json()) as ApiEnvelope & Record<string, unknown>;
 
-  if (!data.success && url.includes('/api/monitor')) {
-    throw new Error('Failed to fetch monitor data');
+  if (!response.ok) {
+    const statusText = response.statusText || 'Unknown Status';
+    const errorMessage =
+      typeof data.error === 'string' && data.error.length > 0
+        ? data.error
+        : `Request failed with status ${response.status} ${statusText}`;
+    throw new Error(`HTTP ${response.status} ${statusText}: ${errorMessage}`);
   }
 
-  return data;
+  if (data.success === false || data.status === 'all_failed') {
+    const statusText = response.statusText || 'Unknown Status';
+    const errorMessage =
+      typeof data.error === 'string' && data.error.length > 0
+        ? data.error
+        : `Failed to fetch data from ${url}`;
+    throw new Error(`HTTP ${response.status} ${statusText}: ${errorMessage}`);
+  }
+
+  return data as T;
 };
 
 /**
@@ -43,6 +75,104 @@ const DEFAULT_SWR_CONFIG: SWRConfiguration = {
   loadingTimeout: 5000, // 增加加载超时
 };
 
+interface PrefetchOptions {
+  ttlMs?: number;
+  force?: boolean;
+}
+
+interface IntentPrefetchOptions extends PrefetchOptions {
+  delayMs?: number;
+  disabled?: boolean;
+}
+
+const DEFAULT_PREFETCH_TTL_MS = 30_000;
+const DEFAULT_PREFETCH_DELAY_MS = 120;
+const MAX_CONCURRENT_PREFETCHES = 2;
+
+let activePrefetches = 0;
+const prefetchedAt = new Map<string, number>();
+const inFlightPrefetchKeys = new Set<string>();
+
+export async function prefetchSWRKey<T>(key: string, options: PrefetchOptions = {}) {
+  const ttlMs = options.ttlMs ?? DEFAULT_PREFETCH_TTL_MS;
+  const now = Date.now();
+  const lastPrefetchedAt = prefetchedAt.get(key);
+
+  if (!options.force && lastPrefetchedAt && now - lastPrefetchedAt < ttlMs) {
+    return false;
+  }
+
+  if (inFlightPrefetchKeys.has(key) || activePrefetches >= MAX_CONCURRENT_PREFETCHES) {
+    return false;
+  }
+
+  activePrefetches += 1;
+  prefetchedAt.set(key, now);
+  inFlightPrefetchKeys.add(key);
+
+  try {
+    await mutate(key, fetcher<T>(key), {
+      populateCache: true,
+      revalidate: false,
+    });
+
+    return true;
+  } catch {
+    return false;
+  } finally {
+    activePrefetches -= 1;
+    inFlightPrefetchKeys.delete(key);
+  }
+}
+
+export function useIntentPrefetch(
+  keys: string | readonly string[],
+  options: IntentPrefetchOptions = {}
+) {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // stable ref for keys — avoids array identity churn in callbacks
+  const keysRef = useRef<readonly string[]>(
+    Array.isArray(keys) ? (keys as readonly string[]) : [keys as string]
+  );
+  const delayMs = options.delayMs ?? DEFAULT_PREFETCH_DELAY_MS;
+  const disabled = options.disabled ?? false;
+  const force = options.force ?? false;
+  const ttlMs = options.ttlMs;
+
+  // keep keys ref in sync without adding array to callback deps
+  const keysSignature = Array.isArray(keys)
+    ? (keys as readonly string[]).join('\x00')
+    : (keys as string);
+  useEffect(() => {
+    keysRef.current = Array.isArray(keys) ? (keys as readonly string[]) : [keys as string];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keysSignature]);
+
+  const cancelPrefetch = useCallback(() => {
+    if (!timerRef.current) return;
+    clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }, []);
+
+  const schedulePrefetch = useCallback(() => {
+    if (disabled) return;
+    cancelPrefetch();
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      for (const k of keysRef.current) {
+        void prefetchSWRKey(k, { force, ttlMs });
+      }
+    }, delayMs);
+  }, [cancelPrefetch, delayMs, disabled, force, ttlMs]);
+
+  useEffect(() => cancelPrefetch, [cancelPrefetch]);
+
+  return {
+    schedulePrefetch,
+    cancelPrefetch,
+  };
+}
+
 /**
  * 获取监控数据的 hook
  * @param config - SWR 配置
@@ -59,6 +189,7 @@ export function useMonitorData(config?: SWRConfiguration) {
   } = useSWR<MonitorResponse>(SWR_KEYS.MONITOR(pageId), fetcher, {
     ...DEFAULT_SWR_CONFIG,
     refreshInterval: 60000, // 每60秒刷新一次
+    keepPreviousData: true, // 页面切换时保留旧数据，避免闪烁
     ...config,
   });
 
@@ -94,8 +225,8 @@ export function useMonitor(monitorId: number | string, config?: SWRConfiguration
   });
 
   const monitor = data?.monitorGroups
-    ?.flatMap((group) => group.monitorList)
-    .find((m) => m.id === numericId);
+    ?.flatMap(group => group.monitorList)
+    .find(m => m.id === numericId);
 
   const monitoringData: MonitoringData = {
     heartbeatList: {
@@ -129,9 +260,10 @@ export function useConfig(config?: SWRConfiguration) {
     error,
     isLoading,
     mutate: revalidate,
-  } = useSWR<GlobalConfig>(SWR_KEYS.CONFIG(pageId), fetcher, {
+  } = useSWR<ConfigResponse>(SWR_KEYS.CONFIG(pageId), fetcher, {
     ...DEFAULT_SWR_CONFIG,
     revalidateIfStale: false, // 除非明确要求，否则不重新验证陈旧数据
+    keepPreviousData: true, // 页面切换时保留旧数据，避免闪烁
     ...config,
   });
 
@@ -157,7 +289,7 @@ export function useMaintenanceData(config?: SWRConfiguration) {
     error,
     isLoading,
     mutate: revalidate,
-  } = useSWR<GlobalConfig>(SWR_KEYS.CONFIG(pageId), fetcher, {
+  } = useSWR<ConfigResponse>(SWR_KEYS.CONFIG(pageId), fetcher, {
     ...DEFAULT_SWR_CONFIG,
     refreshInterval: 60000, // 每60秒刷新一次
     ...config,

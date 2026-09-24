@@ -9,6 +9,15 @@ export interface Config extends Omit<GeneratedConfig, 'pageId' | 'siteMeta'> {
   apiEndpoint: string;
 }
 
+export type PublicPageConfig = Omit<GeneratedPageConfig, 'baseUrl'>;
+
+export interface PublicConfig extends Omit<
+  Config,
+  'baseUrl' | 'htmlEndpoint' | 'apiEndpoint' | 'pages'
+> {
+  pages: PublicPageConfig[];
+}
+
 export interface SiteConfig {
   slug: string;
   title: string;
@@ -26,7 +35,7 @@ export interface SiteConfig {
 
 export interface GlobalConfig {
   config: SiteConfig;
-  incident?: Incident;
+  incidents?: Incident[];
   maintenanceList?: Maintenance[];
 }
 
@@ -100,6 +109,9 @@ export interface PreloadData {
   // 维护计划列表
   maintenanceList: Maintenance[];
 
-  // 维护信息
+  // 维护信息 (legacy single-incident shape, kept for backward compatibility)
   incident?: Incident;
+
+  // 维护信息列表 (newer Kuma versions return an array)
+  incidents?: Incident[];
 }

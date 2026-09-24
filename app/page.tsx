@@ -1,24 +1,27 @@
+import { buildStatusPageMetadata } from '@/app/lib/site-metadata';
 import { PageConfigProvider } from '@/components/context/PageConfigContext';
 import { AppShell } from '@/components/layout/AppShell';
+import { MonitorDataPreload } from '@/components/status/MonitorDataPreload';
 import { StatusPage } from '@/components/status/StatusPage';
-import { getConfig } from '@/config/api';
-import { getGlobalConfig, getPageTabsMetadata } from '@/services/config.server';
+import { getConfig, toPublicConfig } from '@/config/api';
+import type { Metadata } from 'next';
 
-export default async function HomePage() {
+export function generateMetadata(): Metadata {
+  const pageConfig = getConfig();
+  return buildStatusPageMetadata(pageConfig);
+}
+
+export default function HomePage() {
   const pageConfig = getConfig();
 
   if (!pageConfig) {
     throw new Error('Failed to resolve default status page configuration');
   }
 
-  const [{ config: footerConfig }, pageTabs] = await Promise.all([
-    getGlobalConfig(pageConfig.pageId),
-    getPageTabsMetadata(),
-  ]);
-
   return (
-    <PageConfigProvider initialConfig={pageConfig}>
-      <AppShell footerConfig={footerConfig} pageTabs={pageTabs}>
+    <PageConfigProvider key={pageConfig.pageId} initialConfig={toPublicConfig(pageConfig)}>
+      <AppShell>
+        <MonitorDataPreload pageId={pageConfig.pageId} />
         <StatusPage />
       </AppShell>
     </PageConfigProvider>

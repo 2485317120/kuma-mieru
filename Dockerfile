@@ -1,7 +1,7 @@
 # ============================================
 # Build stage
 # ============================================
-FROM node:20-alpine AS builder
+FROM node:26-alpine AS builder
 
 RUN npm install -g bun@latest
 
@@ -9,15 +9,16 @@ WORKDIR /app
 
 # 构建时固定的环境变量
 ENV NODE_ENV=production \
-  NEXT_TELEMETRY_DISABLED=1 \
-  UPTIME_KUMA_BASE_URL=https://whimsical-sopapillas-78abba.netlify.app \
-  PAGE_ID=demo \
-  FEATURE_EDIT_THIS_PAGE=false \
-  FEATURE_SHOW_STAR_BUTTON=true \
-  FEATURE_TITLE="Uptime Kuma" \
-  FEATURE_DESCRIPTION="A beautiful and modern uptime monitoring dashboard" \
-  FEATURE_ICON="" \
-  ALLOW_EMBEDDING=false
+    NEXT_TELEMETRY_DISABLED=1 \
+    UPTIME_KUMA_URLS= \
+    UPTIME_KUMA_BASE_URL=https://whimsical-sopapillas-78abba.netlify.app \
+    PAGE_ID=demo \
+    KUMA_MIERU_EDIT_THIS_PAGE=false \
+    KUMA_MIERU_SHOW_STAR_BUTTON=true \
+    KUMA_MIERU_TITLE="Uptime Kuma" \
+    KUMA_MIERU_DESCRIPTION="A beautiful and modern uptime monitoring dashboard" \
+    KUMA_MIERU_ICON="" \
+    ALLOW_EMBEDDING=false
 
 # 复制依赖文件
 COPY package.json bun.lock ./
@@ -43,40 +44,40 @@ RUN set -e && \
 # ============================================
 # Runtime stage
 # ============================================
-FROM node:20-alpine
+FROM node:26-alpine
 WORKDIR /app
-
-# 安装 Bun 用于生成配置和运行初始化脚本
-RUN npm install -g bun@latest
 
 # 运行时的所有 ARG 和 ENV 配置
 ARG PORT=3000
 ARG HOSTNAME="0.0.0.0"
 ARG NODE_ENV=production
 ARG NEXT_TELEMETRY_DISABLED=1
+ARG UPTIME_KUMA_URLS=
 ARG UPTIME_KUMA_BASE_URL=https://whimsical-sopapillas-78abba.netlify.app
 ARG PAGE_ID=demo
-ARG FEATURE_EDIT_THIS_PAGE=false
-ARG FEATURE_SHOW_STAR_BUTTON=true
-ARG FEATURE_TITLE="Uptime Kuma"
-ARG FEATURE_DESCRIPTION="A beautiful and modern uptime monitoring dashboard"
-ARG FEATURE_ICON=
+ARG KUMA_MIERU_EDIT_THIS_PAGE=false
+ARG KUMA_MIERU_SHOW_STAR_BUTTON=true
+ARG KUMA_MIERU_TITLE="Uptime Kuma"
+ARG KUMA_MIERU_DESCRIPTION="A beautiful and modern uptime monitoring dashboard"
+ARG KUMA_MIERU_ICON=
 ARG ALLOW_EMBEDDING=false
 ARG IS_DOCKER=true
 
 ENV PORT=${PORT} \
-  HOSTNAME=${HOSTNAME} \
-  NODE_ENV=${NODE_ENV} \
-  NEXT_TELEMETRY_DISABLED=${NEXT_TELEMETRY_DISABLED} \
-  UPTIME_KUMA_BASE_URL=${UPTIME_KUMA_BASE_URL} \
-  PAGE_ID=${PAGE_ID} \
-  FEATURE_EDIT_THIS_PAGE=${FEATURE_EDIT_THIS_PAGE} \
-  FEATURE_SHOW_STAR_BUTTON=${FEATURE_SHOW_STAR_BUTTON} \
-  FEATURE_TITLE=${FEATURE_TITLE} \
-  FEATURE_DESCRIPTION=${FEATURE_DESCRIPTION} \
-  FEATURE_ICON=${FEATURE_ICON} \
-  ALLOW_EMBEDDING=${ALLOW_EMBEDDING} \
-  IS_DOCKER=${IS_DOCKER}
+    HOSTNAME=${HOSTNAME} \
+    NODE_ENV=${NODE_ENV} \
+    NEXT_TELEMETRY_DISABLED=${NEXT_TELEMETRY_DISABLED} \
+    UPTIME_KUMA_URLS=${UPTIME_KUMA_URLS} \
+    UPTIME_KUMA_BASE_URL=${UPTIME_KUMA_BASE_URL} \
+    PAGE_ID=${PAGE_ID} \
+    KUMA_MIERU_EDIT_THIS_PAGE=${KUMA_MIERU_EDIT_THIS_PAGE} \
+    KUMA_MIERU_SHOW_STAR_BUTTON=${KUMA_MIERU_SHOW_STAR_BUTTON} \
+    KUMA_MIERU_TITLE=${KUMA_MIERU_TITLE} \
+    KUMA_MIERU_DESCRIPTION=${KUMA_MIERU_DESCRIPTION} \
+    KUMA_MIERU_ICON=${KUMA_MIERU_ICON} \
+    ALLOW_EMBEDDING=${ALLOW_EMBEDDING} \
+    IS_DOCKER=${IS_DOCKER} \
+    PATH="$PATH:/app/node_modules/.bin"
 
 # 安装运行时需要的工具（healthcheck 用）
 RUN apk add --no-cache curl dumb-init && \
@@ -88,9 +89,10 @@ RUN apk add --no-cache curl dumb-init && \
 USER nextjs
 
 # 创建最小化的 package.json 只包含运行时依赖
-# 包括 serverExternalPackages 声明的包：sharp, cheerio, markdown-it, sanitize-html
+# 包括 serverExternalPackages 声明的包：sharp, cheerio
 # 以及 generate 脚本需要的：zod, json5, dotenv, chalk
-RUN bun add --no-cache --production sharp cheerio markdown-it sanitize-html zod json5 dotenv chalk
+# tsx 用于运行 TypeScript 启动脚本（替代 Bun，避免 AVX2 指令集兼容性问题）
+RUN npm install --prefer-online --omit=dev sharp cheerio zod json5 dotenv chalk tsx
 
 # 从 builder 复制构建产物（standalone 输出）
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone/ ./
@@ -107,6 +109,6 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
     CMD curl -f http://localhost:${PORT}/api/health || exit 1
 
 # 使用 dumb-init 作为 PID 1，正确处理信号
-# 使用 Node.js 运行 standalone 服务器 (缓解 worker_threads napi 兼容性问题)
+# 使用 tsx 运行 TypeScript 启动脚本，使用 Node.js 运行 standalone 服务器
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
-CMD ["sh", "-c", "bun run generate && bun run scripts/docker-init.ts && exec node server.js"]
+CMD ["sh", "-c", "tsx scripts/generate-config.ts && tsx scripts/generate-image-domains.ts && tsx scripts/banner.ts && exec node server.js"]

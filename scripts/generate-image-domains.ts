@@ -1,5 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { getString } from './lib/env';
+import { resolveEndpointConfig } from './lib/uptime-kuma';
 
 type ImageProtocol = 'http' | 'https';
 
@@ -41,7 +43,7 @@ const parseUrl = (url: string | null): { hostname: string; protocol: ImageProtoc
 
 const addDomainToMap = (
   map: Map<string, Set<ImageProtocol>>,
-  value: { hostname: string; protocol: ImageProtocol } | null,
+  value: { hostname: string; protocol: ImageProtocol } | null
 ) => {
   if (!value) return;
 
@@ -50,24 +52,46 @@ const addDomainToMap = (
   map.set(value.hostname, protocols);
 };
 
+const resolveBaseUrlsFromEndpointConfig = (): string[] => {
+  try {
+    const { pageEndpoints } = resolveEndpointConfig();
+    return Array.from(new Set(pageEndpoints.map(endpoint => endpoint.baseUrl)));
+  } catch (error) {
+    const hasEndpointEnv =
+      Boolean(process.env.UPTIME_KUMA_URLS?.trim()) ||
+      Boolean(process.env.UPTIME_KUMA_BASE_URL?.trim()) ||
+      Boolean(process.env.PAGE_ID?.trim());
+
+    if (hasEndpointEnv) {
+      console.warn('[env] Failed to resolve endpoint config for image domains:', error);
+    }
+
+    return [];
+  }
+};
+
 const generateImageDomains = (): void => {
   const domainsMap = new Map<string, Set<ImageProtocol>>();
 
-  addDomainToMap(domainsMap, parseUrl(process.env.UPTIME_KUMA_BASE_URL || ''));
-  addDomainToMap(domainsMap, parseUrl(process.env.FEATURE_ICON || ''));
+  for (const baseUrl of resolveBaseUrlsFromEndpointConfig()) {
+    addDomainToMap(domainsMap, parseUrl(baseUrl));
+  }
+
+  const iconEnv = getString('KUMA_MIERU_ICON');
+  addDomainToMap(domainsMap, parseUrl(iconEnv.value ?? ''));
 
   const patterns: ImageDomainPattern[] = Array.from(domainsMap.entries()).map(
     ([hostname, protocols]) => ({
       hostname,
       protocols: Array.from(protocols).sort(),
-    }),
+    })
   );
 
   if (patterns.length === 0) {
     patterns.push({ hostname: '*', protocols: [...supportedProtocols] });
   }
 
-  const legacyDomains = patterns.map((pattern) => pattern.hostname);
+  const legacyDomains = patterns.map(pattern => pattern.hostname);
 
   const domainsConfig: ImageDomainsConfig = {
     timestamp: new Date().toISOString(),
